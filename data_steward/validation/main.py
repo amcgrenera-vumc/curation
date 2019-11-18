@@ -31,6 +31,9 @@ from common import ACHILLES_EXPORT_PREFIX_STRING, ACHILLES_EXPORT_DATASOURCES_JS
 from validation import hpo_report
 from tools import retract_data_bq, retract_data_gcs
 from io import open
+import slack
+
+client = slack.WebClient(os.environ["SLACK_TOKEN"])
 
 PREFIX = '/data_steward/v1/'
 app = Flask(__name__)
@@ -396,7 +399,7 @@ def process_hpo(hpo_id, force_run=False):
     except BucketDoesNotExistError as bucket_error:
         bucket = bucket_error.bucket
         logging.warning('Bucket `%s` configured for hpo_id `%s` does not exist',
-                     bucket, hpo_id)
+                        bucket, hpo_id)
     except HttpError as http_error:
         message = 'Failed to process hpo_id `%s` due to the following HTTP error: %s' % (hpo_id,
                                                                                          http_error.content.decode())
@@ -779,6 +782,38 @@ def write_sites_pii_validation_files():
     return consts.SITES_VALIDATION_REPORT_SUCCESS
 
 
+@api_util.auth_required_cron
+def remove_expired_keys():
+    # project_id = bq_utils.app_identity.get_application_id()
+    # logging.info('Started removal of expired service account keys for %s' % project_id)
+    #
+    # expired_keys = key_rotation.delete_expired_keys(project_id)
+    # logging.info('Completed removal of expired service account keys for %s' % project_id)
+    #
+    # logging.info('Started listing expiring service account keys for %s' % project_id)
+    # expiring_keys = key_rotation.get_expiring_keys(project_id)
+    # logging.info('Completed listing expiring service account keys for %s' % project_id)
+
+    # if NOTIFICATION_ADDRESS is not None:
+
+    # if len(expired_keys) != 0 or len(expiring_keys) != 0:
+    client.chat_postMessage(
+        channel="#test_channel",
+        text="Hello from your GAE second time!!",
+        verify=False
+    )
+
+    # mail.send_mail(sender=SENDER_ADDRESS,
+    #                to=NOTIFICATION_ADDRESS,
+    #                subject=SUBJECT,
+    #                body=email_body(expired_keys, expiring_keys))
+    # else:
+    # LOGGER.exception(
+    #     "The notification address is None"
+    # )
+    return 'remove-expired-keys-complete'
+
+
 app.add_url_rule(
     consts.PREFIX + 'ValidateAllHpoFiles',
     endpoint='validate_all_hpos',
@@ -831,4 +866,9 @@ app.add_url_rule(
     consts.PREFIX + 'RetractPids',
     endpoint='run_retraction_cron',
     view_func=run_retraction_cron,
+    methods=['GET'])
+
+app.add_url_rule(
+    '/admin/v1/RemoveExpiredServiceAccountKeys',
+    view_func=remove_expired_keys,
     methods=['GET'])
