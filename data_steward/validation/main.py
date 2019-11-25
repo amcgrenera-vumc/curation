@@ -788,33 +788,22 @@ def remove_expired_keys():
     project_id = bq_utils.app_identity.get_application_id()
     logging.info('Started removal of expired service account keys for %s' % project_id)
 
-    for service_account in key_rotation.list_service_accounts(project_id):
-        for key in key_rotation.list_keys_for_service_account(service_account['email']):
-            client.chat_postMessage(
-                channel="#test_channel",
-                text=text_body(list({'service_account_email': service_account['email'],
-                                      'key_name': key['name'],
-                                      'created_at': key['validAfterTime']}), list()),
-                verify=False
-            )
-            break
+    expired_keys = key_rotation.delete_expired_keys(project_id)
+    logging.info('Completed removal of expired service account keys for %s' % project_id)
 
+    logging.info('Started listing expiring service account keys for %s' % project_id)
+    expiring_keys = key_rotation.get_expiring_keys(project_id)
+    logging.info('Completed listing expiring service account keys for %s' % project_id)
 
-    # expired_keys = key_rotation.delete_expired_keys(project_id)
-    # logging.info('Completed removal of expired service account keys for %s' % project_id)
-    #
-    # logging.info('Started listing expiring service account keys for %s' % project_id)
-    # expiring_keys = key_rotation.get_expiring_keys(project_id)
-    # logging.info('Completed listing expiring service account keys for %s' % project_id)
-
-    # if len(expiring_keys) != 0:
-    #     client.chat_postMessage(
-    #         channel="#test_channel",
-    #         text=text_body(expired_keys, expiring_keys),
-    #         verify=False
-    #     )
+    if len(expired_keys) != 0 or len(expiring_keys) != 0:
+        client.chat_postMessage(
+            channel="#curation-eng",
+            text=text_body(expired_keys, expiring_keys),
+            verify=False
+        )
 
     return 'remove-expired-keys-complete'
+
 
 def text_body(expired_keys, expiring_keys):
     """
@@ -842,6 +831,7 @@ def text_body(expired_keys, expiring_keys):
                                            key_name=expiring_key['key_name'],
                                            created_at=expiring_key['created_at'])
     return result
+
 
 app.add_url_rule(
     consts.PREFIX + 'ValidateAllHpoFiles',
