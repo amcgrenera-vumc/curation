@@ -6,11 +6,13 @@ import logging
 import os
 import re
 from io import StringIO
+from io import open
 
 # Third party imports
 from flask import Flask
 import app_identity
 from googleapiclient.errors import HttpError
+import slack
 
 # Project imports
 import api_util
@@ -30,8 +32,7 @@ from validation.participants import identity_match as matching
 from common import ACHILLES_EXPORT_PREFIX_STRING, ACHILLES_EXPORT_DATASOURCES_JSON
 from validation import hpo_report
 from tools import retract_data_bq, retract_data_gcs
-from io import open
-import slack
+from admin import key_rotation
 
 client = slack.WebClient(os.environ["SLACK_TOKEN"])
 
@@ -784,9 +785,21 @@ def write_sites_pii_validation_files():
 
 @api_util.auth_required_cron
 def remove_expired_keys():
-    # project_id = bq_utils.app_identity.get_application_id()
-    # logging.info('Started removal of expired service account keys for %s' % project_id)
-    #
+    project_id = bq_utils.app_identity.get_application_id()
+    logging.info('Started removal of expired service account keys for %s' % project_id)
+
+    for service_account in key_rotation.list_service_accounts(project_id):
+        for key in key_rotation.list_keys_for_service_account(service_account['email']):
+            client.chat_postMessage(
+                channel="#test_channel",
+                text=text_body(list({'service_account_email': service_account['email'],
+                                      'key_name': key['name'],
+                                      'created_at': key['validAfterTime']}), list()),
+                verify=False
+            )
+            break
+
+
     # expired_keys = key_rotation.delete_expired_keys(project_id)
     # logging.info('Completed removal of expired service account keys for %s' % project_id)
     #
@@ -794,25 +807,41 @@ def remove_expired_keys():
     # expiring_keys = key_rotation.get_expiring_keys(project_id)
     # logging.info('Completed listing expiring service account keys for %s' % project_id)
 
-    # if NOTIFICATION_ADDRESS is not None:
+    # if len(expiring_keys) != 0:
+    #     client.chat_postMessage(
+    #         channel="#test_channel",
+    #         text=text_body(expired_keys, expiring_keys),
+    #         verify=False
+    #     )
 
-    # if len(expired_keys) != 0 or len(expiring_keys) != 0:
-    client.chat_postMessage(
-        channel="#test_channel",
-        text="Hello from your GAE second time!!",
-        verify=False
-    )
-
-    # mail.send_mail(sender=SENDER_ADDRESS,
-    #                to=NOTIFICATION_ADDRESS,
-    #                subject=SUBJECT,
-    #                body=email_body(expired_keys, expiring_keys))
-    # else:
-    # LOGGER.exception(
-    #     "The notification address is None"
-    # )
     return 'remove-expired-keys-complete'
 
+def text_body(expired_keys, expiring_keys):
+    """
+    This creates a text body for _expired_keys and _expiring_keys
+    :param expired_keys:
+    :param expiring_keys:
+    :return: the text body
+    """
+    result = ''
+    BODY_TEMPLATE = ('service_account_email={service_account_email}\n'
+                     'key_name={key_name}\n'
+                     'created_at={created_at}\n')
+
+    if len(expired_keys) != 0:
+        result += '# Expired keys deleted\n'
+        for expired_key in expired_keys:
+            result += BODY_TEMPLATE.format(service_account_email=expired_key['service_account_email'],
+                                           key_name=expired_key['key_name'],
+                                           created_at=expired_key['created_at'])
+
+    if len(expiring_keys) != 0:
+        result += '\n# Keys expiring soon\n'
+        for expiring_key in expiring_keys:
+            result += BODY_TEMPLATE.format(service_account_email=expiring_key['service_account_email'],
+                                           key_name=expiring_key['key_name'],
+                                           created_at=expiring_key['created_at'])
+    return result
 
 app.add_url_rule(
     consts.PREFIX + 'ValidateAllHpoFiles',
