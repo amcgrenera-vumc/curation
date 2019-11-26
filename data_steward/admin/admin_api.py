@@ -3,16 +3,17 @@ import os
 
 from flask import Flask
 import app_identity
-from google.appengine.api import mail
 
+import slack
 import api_util
 from admin import key_rotation
 
 LOGGER = logging.getLogger(__name__)
 
-SENDER_ADDRESS = 'curation-eng-alert@{project}.appspotmail.com'.format(project=app_identity.get_application_id())
-NOTIFICATION_ADDRESS = os.environ.get('NOTIFICATION_ADDRESS')
-SUBJECT = 'Project {project}: Service account key notices'.format(project=app_identity.get_application_id())
+channel_name = os.getenv('SLACK_CHANNEL', 'test_channel')
+
+PREFIX = '/admin/v1/'
+REMOVE_EXPIRED_KEYS_RULE = PREFIX + 'RemoveExpiredServiceAccountKeys'
 
 BODY_HEADER_EXPIRED_KEY_TEMPLATE = '# Expired keys deleted\n'
 
@@ -22,18 +23,19 @@ BODY_TEMPLATE = ('service_account_email={service_account_email}\n'
                  'key_name={key_name}\n'
                  'created_at={created_at}\n')
 
-PREFIX = '/admin/v1/'
-REMOVE_EXPIRED_KEYS_RULE = PREFIX + 'RemoveExpiredServiceAccountKeys'
-
 app = Flask(__name__)
 
 
-def email_body(expired_keys, expiring_keys):
+def get_slack_client():
+    return slack.WebClient(os.environ["SLACK_TOKEN"])
+
+
+def text_body(expired_keys, expiring_keys):
     """
-    This creates an email body for _expired_keys and _expiring_keys
+    This creates a text body for _expired_keys and _expiring_keys
     :param expired_keys:
     :param expiring_keys:
-    :return: the email body
+    :return: the text body
     """
     result = ''
 
@@ -56,6 +58,7 @@ def email_body(expired_keys, expiring_keys):
 @api_util.auth_required_cron
 def remove_expired_keys():
     project_id = app_identity.get_application_id()
+
     logging.info('Started removal of expired service account keys for %s' % project_id)
 
     expired_keys = key_rotation.delete_expired_keys(project_id)
@@ -65,18 +68,12 @@ def remove_expired_keys():
     expiring_keys = key_rotation.get_expiring_keys(project_id)
     logging.info('Completed listing expiring service account keys for %s' % project_id)
 
-    if NOTIFICATION_ADDRESS is not None:
-
-        if len(expired_keys) != 0 or len(expiring_keys) != 0:
-            mail.send_mail(sender=SENDER_ADDRESS,
-                           to=NOTIFICATION_ADDRESS,
-                           subject=SUBJECT,
-                           body=email_body(expired_keys, expiring_keys))
-    else:
-        LOGGER.exception(
-            "The notification address is None"
+    if len(expiring_keys) != 0 or len(expired_keys) != 0:
+        get_slack_client().chat_postMessage(
+            channel=channel_name,
+            text=text_body(expired_keys, expiring_keys),
+            verify=False
         )
-
     return 'remove-expired-keys-complete'
 
 

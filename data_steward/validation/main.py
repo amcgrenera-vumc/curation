@@ -6,13 +6,11 @@ import logging
 import os
 import re
 from io import StringIO
-from io import open
 
 # Third party imports
 from flask import Flask
 import app_identity
 from googleapiclient.errors import HttpError
-import slack
 
 # Project imports
 import api_util
@@ -32,9 +30,8 @@ from validation.participants import identity_match as matching
 from common import ACHILLES_EXPORT_PREFIX_STRING, ACHILLES_EXPORT_DATASOURCES_JSON
 from validation import hpo_report
 from tools import retract_data_bq, retract_data_gcs
-from admin import key_rotation
-
-client = slack.WebClient(os.environ["SLACK_TOKEN"])
+from io import open
+from curation_logging.curation_gae_handler import begin_request_logging, end_request_logging
 
 PREFIX = '/data_steward/v1/'
 app = Flask(__name__)
@@ -194,7 +191,7 @@ def _upload_achilles_files(hpo_id=None, folder_prefix='', target_bucket=None):
         bucket = gcs_utils.get_hpo_bucket(hpo_id)
     logging.info('Uploading achilles index files to `gs://%s/%s`...', bucket, folder_prefix)
     for filename in resources.ACHILLES_INDEX_FILES:
-        logging.debug('Uploading achilles file `%s` to bucket `%s`' % (filename, bucket))
+        logging.info('Uploading achilles file `%s` to bucket `%s`' % (filename, bucket))
         bucket_file_name = filename.split(resources.resource_path + os.sep)[1].strip().replace('\\', '/')
         with open(filename, 'rb') as fp:
             upload_result = gcs_utils.upload_object(bucket, folder_prefix + bucket_file_name, fp)
@@ -400,7 +397,7 @@ def process_hpo(hpo_id, force_run=False):
     except BucketDoesNotExistError as bucket_error:
         bucket = bucket_error.bucket
         logging.warning('Bucket `%s` configured for hpo_id `%s` does not exist',
-                        bucket, hpo_id)
+                     bucket, hpo_id)
     except HttpError as http_error:
         message = 'Failed to process hpo_id `%s` due to the following HTTP error: %s' % (hpo_id,
                                                                                          http_error.content.decode())
@@ -783,56 +780,6 @@ def write_sites_pii_validation_files():
     return consts.SITES_VALIDATION_REPORT_SUCCESS
 
 
-@api_util.auth_required_cron
-def remove_expired_keys():
-    project_id = bq_utils.app_identity.get_application_id()
-    logging.info('Started removal of expired service account keys for %s' % project_id)
-
-    expired_keys = key_rotation.delete_expired_keys(project_id)
-    logging.info('Completed removal of expired service account keys for %s' % project_id)
-
-    logging.info('Started listing expiring service account keys for %s' % project_id)
-    expiring_keys = key_rotation.get_expiring_keys(project_id)
-    logging.info('Completed listing expiring service account keys for %s' % project_id)
-
-    if len(expired_keys) != 0 or len(expiring_keys) != 0:
-        client.chat_postMessage(
-            channel="#curation-eng",
-            text=text_body(expired_keys, expiring_keys),
-            verify=False
-        )
-
-    return 'remove-expired-keys-complete'
-
-
-def text_body(expired_keys, expiring_keys):
-    """
-    This creates a text body for _expired_keys and _expiring_keys
-    :param expired_keys:
-    :param expiring_keys:
-    :return: the text body
-    """
-    result = ''
-    BODY_TEMPLATE = ('service_account_email={service_account_email}\n'
-                     'key_name={key_name}\n'
-                     'created_at={created_at}\n')
-
-    if len(expired_keys) != 0:
-        result += '# Expired keys deleted\n'
-        for expired_key in expired_keys:
-            result += BODY_TEMPLATE.format(service_account_email=expired_key['service_account_email'],
-                                           key_name=expired_key['key_name'],
-                                           created_at=expired_key['created_at'])
-
-    if len(expiring_keys) != 0:
-        result += '\n# Keys expiring soon\n'
-        for expiring_key in expiring_keys:
-            result += BODY_TEMPLATE.format(service_account_email=expiring_key['service_account_email'],
-                                           key_name=expiring_key['key_name'],
-                                           created_at=expiring_key['created_at'])
-    return result
-
-
 app.add_url_rule(
     consts.PREFIX + 'ValidateAllHpoFiles',
     endpoint='validate_all_hpos',
@@ -887,7 +834,7 @@ app.add_url_rule(
     view_func=run_retraction_cron,
     methods=['GET'])
 
-app.add_url_rule(
-    '/admin/v1/RemoveExpiredServiceAccountKeys',
-    view_func=remove_expired_keys,
-    methods=['GET'])
+
+app.before_request(begin_request_logging)  # Must be first before_request() call.
+
+app.after_request(end_request_logging)  # Must be last after_request() call.
